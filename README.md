@@ -1,5 +1,9 @@
 # nanoagent
 
+[![tests](https://github.com/gabrielekarra/nanoagent/actions/workflows/test.yml/badge.svg)](https://github.com/gabrielekarra/nanoagent/actions/workflows/test.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)
+
 **An agent SDK small enough to read.** The engine is under 400 lines of Python in two files, and a seven-chapter tutorial builds it from an empty file so you know why every line is there.
 
 ```python
@@ -15,6 +19,16 @@ print(agent.run("Do I need an umbrella in Rome?"))
 ```
 
 That is the whole API: a function becomes a tool, tools go into an agent, and `run` works until the job is done.
+
+## Try it in 30 seconds
+
+```bash
+pip install git+https://github.com/gabrielekarra/nanoagent
+export ANTHROPIC_API_KEY=...
+nanoagent
+```
+
+<!-- demo: record docs/demo.tape, commit docs/demo.gif, then replace this comment with ![demo](docs/demo.gif) -->
 
 ## Why another agent SDK
 
@@ -157,6 +171,10 @@ Chapter 7 is a complete coding agent. `nanoagent/agent.py` is the same logic arr
 - **The instructions and the tool set are fixed for an agent's lifetime**, for the same reason.
 - **Every tool call gets a result**, even when it was declined, invalid, cut off or interrupted. A call without a result makes the next request fail.
 - **The model's reply is stored exactly as received**, including the blocks you do not display.
+
+## Who this is for
+
+Pick nanoagent if you want to understand how an agent works, build a small one you can fully audit, or test agent behaviour in CI without a network. Pick a larger framework if you need many model providers, async, or ready-made integrations out of the box.
 
 ## What is not here
 
