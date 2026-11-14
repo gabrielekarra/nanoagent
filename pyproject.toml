@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nanoagent"
+version = "0.1.0"
+description = "An agent SDK small enough to read, with a tutorial that builds it from scratch."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = ["anthropic>=2"]
+
+[project.urls]
+Repository = "https://github.com/gabrielekarra/nanoagent"
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+nanoagent = "nanoagent.cli:main"
+
+[tool.setuptools]
+packages = ["nanoagent"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
