@@ -3,6 +3,7 @@
     nanoagent --model ollama:qwen3:4b              a coding agent in your terminal
     nanoagent run jarvis.py                        run a file that calls agent.live()
     nanoagent service install jarvis.py            keep it running (see service.py)
+    nanoagent apps                                 the apps app("...") can control
 
 The coding agent is the SDK used the way you would use it: the built-in
 coding tools, approval before anything that changes your machine, notes
@@ -33,7 +34,7 @@ def show_tool(name, arguments):
     print(f"\n  [{name}] {json.dumps(arguments)[:100]}")
 
 
-COMMANDS = ("run", "service")
+COMMANDS = ("run", "service", "apps")
 
 
 def main(model=None, argv=None):
@@ -66,8 +67,13 @@ def command(argv):
                          help="a variable for the agent, e.g. a token; stored in a private file")
     service.add_argument("--dry-run", action="store_true", help="print the service file instead of installing it")
     service.add_argument("--system", choices=["linux", "macos"], help="default: this machine")
+    commands.add_parser("apps", help="list the apps app() can control")
     options = parser.parse_args(argv)
 
+    if options.command == "apps":
+        from .apps import listing
+
+        return print(listing())
     if options.command == "run":
         from .service import run_file
 
