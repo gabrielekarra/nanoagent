@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from fakes import FakeAnthropic  # noqa: E402
 
 TUTORIAL = Path(__file__).parent.parent / "tutorial"
-CHAPTERS = sorted(path.name for path in TUTORIAL.glob("0*.py"))
+CHAPTERS = sorted(path.name for path in TUTORIAL.glob("0*.py") if int(path.name[:2]) <= 7)  # the Claude chapters
 
 
 def pytest_configure(config):
