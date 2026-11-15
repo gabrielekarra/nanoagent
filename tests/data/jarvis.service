@@ -1,0 +1,14 @@
+# Managed by nanoagent. Remove with: nanoagent service uninstall /home/ada/agents/jarvis.py
+[Unit]
+Description=nanoagent: jarvis
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 -m nanoagent run --env-file /home/ada/.config/nanoagent/jarvis.env /home/ada/agents/jarvis.py
+WorkingDirectory=/home/ada/agents
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

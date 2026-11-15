@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Managed by nanoagent. Remove with: nanoagent service uninstall /home/ada/agents/jarvis.py -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.nanoagent.jarvis</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>-m</string>
+        <string>nanoagent</string>
+        <string>run</string>
+        <string>--env-file</string>
+        <string>/home/ada/.config/nanoagent/jarvis.env</string>
+        <string>/home/ada/agents/jarvis.py</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/home/ada/agents</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/home/ada/Library/Logs/nanoagent-jarvis.log</string>
+    <key>StandardErrorPath</key>
+    <string>/home/ada/Library/Logs/nanoagent-jarvis.log</string>
+</dict>
+</plist>
