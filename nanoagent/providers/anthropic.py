@@ -25,6 +25,7 @@ class Anthropic(Model):
     """
 
     key = "anthropic"
+    images = True
 
     def __init__(self, model="claude-opus-5-5", *, client=None, max_tokens=64_000, effort=None,
                  fallbacks="default", context_window=1_000_000):
@@ -117,8 +118,18 @@ class Anthropic(Model):
                 wire.append({
                     "role": "user",
                     "content": [
-                        {"type": "tool_result", "tool_use_id": r["id"], "content": r["content"], "is_error": r["error"]}
+                        {"type": "tool_result", "tool_use_id": r["id"], "content": _content(r["content"]), "is_error": r["error"]}
                         for r in turn["results"]
                     ],
                 })
         return wire
+
+
+def _content(content):
+    if isinstance(content, str):
+        return content
+    return [
+        {"type": "text", "text": part} if isinstance(part, str)
+        else {"type": "image", "source": {"type": "base64", "media_type": part["media_type"], "data": part["data"]}}
+        for part in content
+    ]

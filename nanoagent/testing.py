@@ -35,9 +35,9 @@ def text(value):
     return {"type": "text", "text": value}
 
 
-def call(name, _id=None, **arguments):
-    """A tool call in a scripted reply."""
-    return {"type": "tool_use", "id": _id or f"toolu_{next(_ids)}", "name": name, "input": arguments}
+def call(_tool, _id=None, **arguments):
+    """A tool call in a scripted reply: `call("get_weather", city="Rome")`."""
+    return {"type": "tool_use", "id": _id or f"toolu_{next(_ids)}", "name": _tool, "input": arguments}
 
 
 def reply(*blocks, stop=None, tokens=10):
@@ -62,10 +62,11 @@ class FakeModel(Model):
     key = "fake"
     name = "fake"
 
-    def __init__(self, *script, context_window=200_000):
+    def __init__(self, *script, context_window=200_000, images=True):
         self.script = list(script)
         self.requests = []
         self.context_window = context_window
+        self.images = images
 
     def reply(self, system, tools, messages, on_text=None):
         self.requests.append({

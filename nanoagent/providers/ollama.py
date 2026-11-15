@@ -8,7 +8,7 @@ API lets nanoagent set the window on every request.
 
 import json
 
-from ..model import Call, ModelError, Reply
+from ..model import Call, ModelError, Reply, images_of, text_of
 from . import guided
 from .openai import OpenAICompatible, ThinkFilter, estimate, rejects_tools
 
@@ -28,8 +28,8 @@ class Ollama(OpenAICompatible):
     key = "ollama"
 
     def __init__(self, model, *, host="http://localhost:11434", context=8192, pull=False, tools="auto",
-                 timeout=600, **options):
-        super().__init__(host, model, tools=tools, context_window=context, timeout=timeout)
+                 timeout=600, images=False, **options):
+        super().__init__(host, model, tools=tools, context_window=context, timeout=timeout, images=images)
         self.name = f"ollama:{model}"
         self.pull = pull
         self.model_options = {"num_ctx": context, **options}
@@ -121,7 +121,10 @@ class Ollama(OpenAICompatible):
                     ]
                 wire.append(message)
             elif turn["role"] == "tool":
-                wire += [{"role": "tool", "tool_name": r["name"], "content": r["content"]} for r in turn["results"]]
+                wire += [{"role": "tool", "tool_name": r["name"], "content": text_of(r["content"])} for r in turn["results"]]
+                pictures = [image["data"] for r in turn["results"] for image in images_of(r["content"])]
+                if pictures and self.images:
+                    wire.append({"role": "user", "content": "Images returned by the tools:", "images": pictures})
         return guided.merge(wire)
 
     # --- guided mode transport ------------------------------------------------

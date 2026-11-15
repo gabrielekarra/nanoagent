@@ -347,12 +347,14 @@ class Agent:
 
     def _result(self, call, output, failed=False):
         """A tool result. `output` is text, or a list of text and image parts (see Image)."""
+        if hasattr(output, "part"):  # an Image on its own
+            output = [output]
         if isinstance(output, list):
             parts = [self._clip(p) if isinstance(p, str) else p.part() if hasattr(p, "part") else p for p in output]
+            if not getattr(self.model, "images", False):
+                parts = [p if isinstance(p, str) else "[image not shown: this model does not accept images]" for p in parts]
             texts = [p for p in parts if isinstance(p, str)]
             content = parts if len(texts) != len(parts) else "\n".join(texts)
-        elif hasattr(output, "part"):  # an Image
-            content = [output.part()]
         else:
             content = self._clip(str(output))
         return {"id": call["id"], "name": call["name"], "content": content or "(no output)", "error": failed}

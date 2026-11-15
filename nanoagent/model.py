@@ -73,8 +73,31 @@ class Model:
 
 
 def estimate(*parts):
-    """A rough token count: about four characters a token, over the JSON form of `parts`."""
-    return sum(len(part if isinstance(part, str) else json.dumps(part, default=str)) for part in parts) // 4
+    """A rough token count: about four characters a token, over the JSON form of `parts`.
+    An image counts as about 1,500 tokens, whatever its size in bytes."""
+    return sum(len(part if isinstance(part, str) else json.dumps(_light(part), default=str)) for part in parts) // 4
+
+
+def _light(value):
+    if isinstance(value, dict):
+        if value.get("type") == "image":
+            return "x" * 6000
+        return {key: _light(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_light(item) for item in value]
+    return value
+
+
+def text_of(content):
+    """The text of a tool result's content: a string, or a list of text and image parts."""
+    if isinstance(content, str):
+        return content
+    return "\n".join(part if isinstance(part, str) else "[image]" for part in content)
+
+
+def images_of(content):
+    """The image parts of a tool result's content."""
+    return [] if isinstance(content, str) else [part for part in content if isinstance(part, dict)]
 
 
 def _ollama_url():

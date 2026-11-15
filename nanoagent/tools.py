@@ -33,6 +33,25 @@ class Tool:
         return ", ".join(validate(arguments, self.schema)) or None
 
 
+@dataclass
+class Image:
+    """An image a tool can return, alone or in a list with text:
+
+        return Image(png_bytes)
+        return ["Here is the page:", Image(png_bytes)]
+
+    Only models that accept images in tool results receive it (`model.images`).
+    """
+
+    data: bytes
+    media_type: str = "image/png"
+
+    def part(self):
+        import base64
+
+        return {"type": "image", "media_type": self.media_type, "data": base64.b64encode(self.data).decode()}
+
+
 def validate(value, schema, path=None):
     """The problems of `value` against the parts of JSON Schema tools use."""
     kinds = schema.get("type")

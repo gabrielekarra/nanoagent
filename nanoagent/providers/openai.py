@@ -9,7 +9,7 @@ import json
 import urllib.error
 import urllib.request
 
-from ..model import Call, Model, ModelError, Reply
+from ..model import Call, Model, ModelError, Reply, images_of, text_of
 from . import guided
 
 # Phrases servers use to say a model has no tool support.
@@ -58,6 +58,7 @@ class OpenAICompatible(Model):
 
         OpenAICompatible("http://localhost:8080/v1", "qwen3-4b")
 
+    images          True if the model accepts images
     tools           "native" uses the server's tool calling, "guided" asks for
                     JSON steps instead (see `guided.py`), "auto" starts native
                     and switches to guided if the server says the model has no
@@ -70,7 +71,7 @@ class OpenAICompatible(Model):
     key = "openai"
 
     def __init__(self, base_url, model, *, api_key=None, tools="auto", context_window=32_000,
-                 max_tokens=None, timeout=600, **options):
+                 max_tokens=None, timeout=600, images=False, **options):
         if tools not in ("auto", "native", "guided"):
             raise ValueError("tools must be 'auto', 'native' or 'guided'")
         self.base_url = base_url.rstrip("/")
@@ -81,6 +82,7 @@ class OpenAICompatible(Model):
         self.context_window = context_window
         self.max_tokens = max_tokens
         self.timeout = timeout
+        self.images = images  # the model accepts images (tool results with screenshots)
         self.options = options
         self.stream_usage = True  # off if the server rejects stream_options
         self.formats = ["json_schema", "json_object", None]  # what guided mode can still try
@@ -179,7 +181,13 @@ class OpenAICompatible(Model):
                     ]
                 wire.append(message)
             elif turn["role"] == "tool":
-                wire += [{"role": "tool", "tool_call_id": r["id"], "content": r["content"]} for r in turn["results"]]
+                wire += [{"role": "tool", "tool_call_id": r["id"], "content": text_of(r["content"])} for r in turn["results"]]
+                pictures = [image for r in turn["results"] for image in images_of(r["content"])]
+                if pictures and self.images:  # tool messages cannot hold images: show them right after
+                    wire.append({"role": "user", "content": [{"type": "text", "text": "Images returned by the tools:"}] + [
+                        {"type": "image_url", "image_url": {"url": f"data:{p['media_type']};base64,{p['data']}"}}
+                        for p in pictures
+                    ]})
         return guided.merge(wire)
 
     # --- guided mode transport ------------------------------------------------

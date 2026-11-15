@@ -10,12 +10,12 @@ from .channels.voice import voice
 from .channels.whatsapp import whatsapp
 from .model import Call, Model, ModelError, Reply, resolve
 from .runtime import Channel, Event
-from .tools import CODING_TOOLS, Tool, edit_file, read_file, shell, tool, write_file
+from .tools import CODING_TOOLS, Image, Tool, edit_file, read_file, shell, tool, write_file
 from .triggers import at, every
 
 __all__ = [
     "Agent", "Model", "Reply", "Call", "ModelError", "resolve",
-    "Tool", "tool", "CODING_TOOLS", "shell", "read_file", "write_file", "edit_file",
+    "Tool", "tool", "Image", "CODING_TOOLS", "shell", "read_file", "write_file", "edit_file",
     "Channel", "Event", "every", "at",
     "telegram", "whatsapp", "http", "voice", "discord", "slack", "email",
 ]
