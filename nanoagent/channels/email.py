@@ -66,7 +66,9 @@ class Email(Channel):
         message = EmailMessage()
         message["From"], message["To"] = self.address, peer
         message["Subject"] = subject if subject.lower().startswith("re:") else f"Re: {subject}"
-        message["Message-ID"] = make_msgid()
+        # With no domain, make_msgid looks up this machine's name, which can hang for seconds.
+        domain = self.address.split("@")[-1] if self.address and "@" in self.address else "nanoagent.local"
+        message["Message-ID"] = make_msgid(domain=domain)
         if reference:
             message["In-Reply-To"] = message["References"] = reference
         message.set_content(text)
