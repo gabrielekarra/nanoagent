@@ -225,3 +225,78 @@ class FakeOllama(FakeServer):
             lines.append({"message": {"role": "assistant", "content": "", "tool_calls": calls}, "done": False})
         lines.append({"message": {"role": "assistant", "content": ""}, **end})
         self.send_stream(handler, "application/x-ndjson", [json.dumps(line) + "\n" for line in lines])
+
+
+# --- Telegram Bot API ---------------------------------------------------------------
+
+
+class FakeTelegram(FakeServer):
+    """Serves getUpdates from `updates`, records every other call in `calls`.
+
+    fail_polls   answer this many getUpdates calls with 502 first
+    """
+
+    def __init__(self, token="123:secret"):
+        super().__init__()
+        self.token = token
+        self.updates = []
+        self.calls = []  # (method, payload)
+        self.fail_polls = 0
+        self._next_id = 1
+
+    def message(self, chat, text):
+        self.updates.append({"update_id": self._next_id, "message": {"chat": {"id": chat}, "text": text}})
+        self._next_id += 1
+
+    def button(self, chat, data):
+        self.updates.append({"update_id": self._next_id, "callback_query": {
+            "id": f"q{self._next_id}", "data": data, "message": {"chat": {"id": chat}}}})
+        self._next_id += 1
+
+    def sent(self, method="sendMessage"):
+        return [payload for name, payload in self.calls if name == method]
+
+    def handle(self, handler, path, body):
+        prefix = f"/bot{self.token}/"
+        if not path.startswith(prefix):
+            return self.send_json(handler, 401, {"ok": False, "description": "Unauthorized"})
+        method = path[len(prefix):]
+        if method == "getUpdates":
+            if self.fail_polls:
+                self.fail_polls -= 1
+                return self.send_json(handler, 502, {"ok": False, "description": "Bad Gateway"})
+            offset = body.get("offset") or 0
+            pending = [u for u in self.updates if u["update_id"] >= offset]
+            if not pending:
+                import time
+
+                time.sleep(0.02)
+            return self.send_json(handler, 200, {"ok": True, "result": pending})
+        self.calls.append((method, body))
+        text = body.get("text", "")
+        if body.get("parse_mode") == "Markdown" and (text.count("*") % 2 or text.count("_") % 2):
+            self.calls.pop()
+            return self.send_json(handler, 400, {"ok": False, "description": "Bad Request: can't parse entities"})
+        if len(text) > 4096:
+            return self.send_json(handler, 400, {"ok": False, "description": "Bad Request: message is too long"})
+        return self.send_json(handler, 200, {"ok": True, "result": {"message_id": len(self.calls)}})
+
+
+# --- WhatsApp Graph API ---------------------------------------------------------------
+
+
+class FakeGraph(FakeServer):
+    """Records sent messages; `outside_window` peers get error 131047."""
+
+    def __init__(self):
+        super().__init__()
+        self.sent = []  # (peer, text)
+        self.outside_window = set()
+
+    def handle(self, handler, path, body):
+        if handler.headers.get("Authorization") != "Bearer wa-token":
+            return self.send_json(handler, 401, {"error": {"message": "Invalid OAuth access token", "code": 190}})
+        if body["to"] in self.outside_window:
+            return self.send_json(handler, 400, {"error": {"message": "Re-engagement message", "code": 131047}})
+        self.sent.append((body["to"], body["text"]["body"]))
+        return self.send_json(handler, 200, {"messages": [{"id": "wamid.1"}]})

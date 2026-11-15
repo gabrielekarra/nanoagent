@@ -14,6 +14,9 @@ CHAPTERS = sorted(path.name for path in TUTORIAL.glob("0*.py"))
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "local: needs a real local model (set NANOAGENT_LOCAL_MODEL)")
+    config.addinivalue_line("markers", "voice: needs the voice extra")
+    config.addinivalue_line("markers", "docker: needs Docker")
+    config.addinivalue_line("markers", "browser: needs Playwright and Chromium")
 
 
 @pytest.fixture

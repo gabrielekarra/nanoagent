@@ -333,6 +333,7 @@ class Agent:
     async def _invoke(self, call, each, context):
         if self.on_tool:
             self.on_tool(call["name"], call["arguments"])
+        self._emit("tool_start", session=context["session"], call=call)
         try:
             if inspect.iscoroutinefunction(each.function):
                 output = await each.function(**call["arguments"])

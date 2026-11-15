@@ -98,8 +98,11 @@ class Channel:
 
     def post(self, peer, text, **extra):
         """Deliver an incoming message from any thread."""
-        future = asyncio.run_coroutine_threadsafe(self._deliver(peer, text, **extra), self._loop)
-        return future.result()
+        try:
+            future = asyncio.run_coroutine_threadsafe(self._deliver(peer, text, **extra), self._loop)
+            return future.result(timeout=30)
+        except RuntimeError:
+            return None  # the runtime has stopped
 
 
 class Runtime:
@@ -210,6 +213,8 @@ class Runtime:
         return lambda name, arguments: False
 
     async def _ask(self, channel, peer, name, arguments):
+        if not getattr(channel, "can_approve", True):  # e.g. one HTTP request, one answer
+            return False
         key = (channel.name, peer)
         waiting = self.loop.create_future()
         self.pending[key] = waiting
