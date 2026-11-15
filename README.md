@@ -344,7 +344,7 @@ Chapters 1 to 7 use Claude (the `anthropic` extra and a key); 8 to 10 use any Op
 - **Every tool call gets a result**, even when it was declined, invalid, cut off or interrupted.
 - **Each provider's reply is stored as received** next to the neutral form, and replayed unchanged to the provider that wrote it.
 
-The core (`agent.py`, `model.py` and `tools.py`) is 847 lines. The whole package, every provider and channel included, is 5319 lines of Python with no dependencies.
+The core (`agent.py`, `model.py` and `tools.py`) is 847 lines. The whole package, every provider and channel included, is 5321 lines of Python with no dependencies.
 
 ## Development
 
