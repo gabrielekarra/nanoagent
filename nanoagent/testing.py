@@ -20,6 +20,7 @@ agent uses in production.
 import asyncio
 import copy
 import itertools
+import json
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 
@@ -52,6 +53,10 @@ def reply(*blocks, stop=None, tokens=10):
     return {"content": list(blocks), "stop": stop, "tokens": tokens}
 
 
+class ReplayDivergence(AssertionError):
+    """The agent's request is not the one recorded in the log being replayed."""
+
+
 class FakeModel(Model):
     """Serves scripted replies, in order, and records every request.
 
@@ -74,6 +79,14 @@ class FakeModel(Model):
             "tools": [{"name": t.name, "description": t.description, "schema": t.schema} for t in tools],
             "messages": copy.deepcopy(messages),
         })
+        expected = getattr(self, "expected", None)
+        if expected is not None:
+            index = len(self.requests) - 1
+            sent = json.loads(json.dumps(messages[-1] if messages else None, default=str))
+            if index >= len(expected) or sent != expected[index]:
+                logged = expected[index] if index < len(expected) else "(nothing: the log ends here)"
+                raise ReplayDivergence(f"Replay diverged at request {index + 1}.\n  log:   {json.dumps(logged)[:500]}"
+                                       f"\n  agent: {json.dumps(sent)[:500]}")
         if not self.script:
             raise ModelError("FakeModel: the script has no replies left")
         scripted = self.script.pop(0)
@@ -91,6 +104,24 @@ class FakeModel(Model):
     def tool_results(self, request=-1):
         """The tool results the agent sent in a request (the last one by default)."""
         return self.requests[request]["messages"][-1]["results"]
+
+    @classmethod
+    def from_log(cls, path):
+        """A model that gives the replies recorded by `log()`, and checks the agent asks the same things."""
+        from .log import read
+
+        script, expected = [], []
+        for record in read(path):
+            if record["event"] == "request":
+                expected.append(record.get("last"))
+            elif record["event"] == "reply":
+                blocks = [text(record["text"])] if record.get("text") else []
+                blocks += [call(c["name"], c["id"], **(c["arguments"] if isinstance(c["arguments"], dict) else {}))
+                           for c in record.get("calls", [])]
+                script.append(reply(*blocks, stop=record.get("stop") or None, tokens=record.get("context") or 0))
+        model = cls(*script)
+        model.expected = expected
+        return model
 
     # Usable as a context manager, like the HTTP fakes in the test suite.
     def __enter__(self):

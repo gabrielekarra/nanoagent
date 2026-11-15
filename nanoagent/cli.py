@@ -4,6 +4,7 @@
     nanoagent run jarvis.py                        run a file that calls agent.live()
     nanoagent service install jarvis.py            keep it running (see service.py)
     nanoagent apps                                 the apps app("...") can control
+    nanoagent show runs/default-2026-11-15.jsonl   a recorded session, as a transcript
 
 The coding agent is the SDK used the way you would use it: the built-in
 coding tools, approval before anything that changes your machine, notes
@@ -34,7 +35,7 @@ def show_tool(name, arguments):
     print(f"\n  [{name}] {json.dumps(arguments)[:100]}")
 
 
-COMMANDS = ("run", "service", "apps")
+COMMANDS = ("run", "service", "apps", "show")
 
 
 def main(model=None, argv=None):
@@ -68,7 +69,14 @@ def command(argv):
     service.add_argument("--dry-run", action="store_true", help="print the service file instead of installing it")
     service.add_argument("--system", choices=["linux", "macos"], help="default: this machine")
     commands.add_parser("apps", help="list the apps app() can control")
+    show = commands.add_parser("show", help="print a log recorded with log() as a transcript")
+    show.add_argument("file")
     options = parser.parse_args(argv)
+
+    if options.command == "show":
+        from .log import show as transcript
+
+        return print(transcript(options.file))
 
     if options.command == "apps":
         from .apps import listing

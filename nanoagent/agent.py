@@ -384,7 +384,10 @@ class Agent:
         request = messages + [{"role": "user", "content": COMPACT_PROMPT}]
         request = self._fit(request, int(self.model.context_window * 0.8))
         # Same instructions and tools as always, so a cached prefix still hits.
+        session = (CURRENT.get() or {}).get("session", "default")
+        self._emit("request", session=session, system=self.system, messages=request)
         reply = await self.model.areply(self.system, list(self.tools.values()), request)
+        self._emit("reply", session=session, text=reply.text, calls=[], stop=reply.stop, context=reply.context, raw=reply.raw)
         if reply.text:
             messages[:] = [
                 {
