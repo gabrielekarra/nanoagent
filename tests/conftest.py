@@ -17,6 +17,7 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "voice: needs the voice extra")
     config.addinivalue_line("markers", "docker: needs Docker")
     config.addinivalue_line("markers", "browser: needs Playwright and Chromium")
+    config.addinivalue_line("markers", "slow: builds the package")
 
 
 @pytest.fixture
