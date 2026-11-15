@@ -104,6 +104,7 @@ class Agent:
         self.hooks = []  # hook(event, data), for logging and replay
         self.closers = []  # called when the agent shuts down
         self.notifier = None  # set by the first channel; see notify.py
+        self.runtime = None  # set while live() runs
         self.clock = datetime.now  # replaceable in tests
 
         self._add_tools(tools)
@@ -131,6 +132,12 @@ class Agent:
                 f"or a plugin (anything with an attach(agent) method), not {type(thing).__name__}"
             )
         return thing
+
+    def notify_on(self, channel, peer=None):
+        """Send unprompted messages (trigger answers, the `notify` tool) to `peer` on `channel`."""
+        from .notify import enable
+
+        enable(self).target = (channel, peer)
 
     def _add_tools(self, tools):
         tools = list(tools)
