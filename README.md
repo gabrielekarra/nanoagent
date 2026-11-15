@@ -1,6 +1,6 @@
 # nanoagent
 
-**An agent SDK small enough to read.** The engine is under 400 lines of Python in two files, and a seven-chapter tutorial builds it from an empty file so you know why every line is there.
+**Any model becomes an agent, and you can read all of it.** Claude, GPT, or a 1.5B model running on your laptop through Ollama: the same few lines give it tools and a loop. The engine is under 500 lines of Python with no dependencies, and a seven-chapter tutorial builds it from an empty file.
 
 ```python
 from nanoagent import Agent, tool
@@ -10,21 +10,22 @@ def get_weather(city: str) -> str:
     """Return today's weather in a city."""
     return "sunny, 24°C"
 
-agent = Agent("You are a travel assistant.", tools=[get_weather])
+agent = Agent("You are a travel assistant.", tools=[get_weather], model="ollama:qwen3:4b")
 print(agent.run("Do I need an umbrella in Rome?"))
 ```
 
-That is the whole API: a function becomes a tool, tools go into an agent, and `run` works until the job is done.
+Change `model=` and nothing else: `"anthropic:claude-opus-5-5"`, `"openai:gpt-5"`, `"lmstudio:qwen3-4b"`.
+
+Where this is going (voice, Telegram and WhatsApp, schedules, app control, always on, each in one line) is in [ROADMAP.md](ROADMAP.md).
 
 ## Why another agent SDK
 
-Most agent frameworks are large enough that you cannot tell what happens between your code and the model. When the agent misbehaves, you are debugging someone else's abstractions.
+Most agent frameworks assume a large hosted model and are big enough that you cannot tell what happens between your code and it. nanoagent takes the opposite bet:
 
-nanoagent takes the opposite bet:
-
-- **You can read all of it.** `agent.py` is the loop, `tools.py` is the tool decorator. There is no plugin system, no graph, no chain.
-- **You can test your agent offline.** A built-in fake model serves scripted replies over real HTTP, so your tests run in milliseconds with no API key and no flakiness.
-- **You can learn how it works.** `tutorial/` rebuilds the engine one idea per chapter, each a single runnable file.
+- **Small models are first-class.** A model with no tool support at all still becomes an agent (see [guided mode](#models-that-cannot-call-tools)), and the context budget adapts to a 4k window.
+- **You can read all of it.** `agent.py` is the loop, `tools.py` the tool decorator, `model.py` the one interface a model implements. Each provider is one more file.
+- **You can test your agent offline.** A built-in fake model serves scripted replies, so tests run in milliseconds with no model, no key and no flakiness.
+- **You can learn how it works.** `tutorial/` rebuilds the engine one idea per chapter.
 
 It still does what a production loop has to do: streaming, approval before risky actions, input validation, prompt caching, context compaction, persistent memory, subagents, and clean recovery from Ctrl-C.
 
@@ -34,11 +35,74 @@ It still does what a production loop has to do: streaming, approval before risky
 pip install git+https://github.com/gabrielekarra/nanoagent
 ```
 
+That is enough for local models and every OpenAI-compatible server. For Claude, add the extra:
+
 ```bash
-export ANTHROPIC_API_KEY=...
+pip install "nanoagent[anthropic] @ git+https://github.com/gabrielekarra/nanoagent"
 ```
 
-Requires Python 3.10+. The only dependency is the official `anthropic` SDK.
+Requires Python 3.10+.
+
+## Models
+
+| `model=` | What it talks to | Key |
+|---|---|---|
+| `"ollama:qwen3:4b"` | Ollama, native API (`OLLAMA_HOST`, default `localhost:11434`) | none |
+| `"llamacpp:any"` | llama.cpp server on `localhost:8080` | none |
+| `"lmstudio:qwen3-4b"` | LM Studio on `localhost:1234` | none |
+| `"vllm:Qwen/Qwen3-8B"` | vLLM on `localhost:8000` | none |
+| `"openrouter:meta-llama/llama-3.3-70b-instruct"` | OpenRouter | `OPENROUTER_API_KEY` |
+| `"openai:gpt-5"` | OpenAI | `OPENAI_API_KEY` |
+| `"anthropic:claude-opus-5-5"` or `"claude-opus-5-5"` | Anthropic | `ANTHROPIC_API_KEY` |
+
+With no `model=`, the `NANOAGENT_MODEL` environment variable is used.
+
+For anything else that speaks the Chat Completions format, or to set options:
+
+```python
+from nanoagent import Agent
+from nanoagent.providers.ollama import Ollama
+from nanoagent.providers.openai import OpenAICompatible
+
+Agent(model=OpenAICompatible("http://gpu-box:8000/v1", "my-model", context_window=16_000, temperature=0.2))
+Agent(model=Ollama("llama3.2:3b", context=16_384, pull=True))   # downloads the model if missing
+```
+
+Ollama gets its own adapter for one reason: on its OpenAI-compatible endpoint it runs models with a small default window and silently drops the start of a long conversation, which is where the instructions and the tools are. The native adapter sets the window on every request.
+
+A model of your own is one method:
+
+```python
+from nanoagent import Call, Model, Reply
+
+class MyModel(Model):
+    context_window = 8000
+
+    def reply(self, system, tools, messages, on_text=None):
+        ...
+        return Reply(text="Hello")      # or Reply(calls=[Call(id, name, arguments)], stop="tool")
+```
+
+### Models that cannot call tools
+
+Small models often have no tool-calling template, or use it unreliably. With `tools="guided"`, nanoagent stops relying on it: the model answers each step with one JSON object, either a tool call or the final answer.
+
+```json
+{"thought": "I need the weather", "tool": "get_weather", "arguments": {"city": "Rome"}}
+{"thought": "I have it", "answer": "Sunny, no umbrella needed."}
+```
+
+Where the server supports constrained decoding (llama.cpp, Ollama, vLLM, LM Studio), the object is enforced by a JSON schema built from your tools, so the model cannot write anything else. Whatever comes back is still parsed defensively: code fences, prose around the JSON, trailing commas, single quotes, `<think>` blocks and common alternative key names are all accepted, and an unreadable reply gets one correction.
+
+You rarely need to choose. The default, `tools="auto"`, starts with native tool calling and switches to guided the moment the server says the model has no tool support. In native mode, a call the model wrote as JSON text instead of using the tool format is recognized and run.
+
+```python
+Agent(tools=[get_weather], model=Ollama("gemma2:2b", tools="guided"))
+```
+
+### Small context windows
+
+The defaults follow the model's window. With an 8k model, the history is summarized at 70% of the window instead of at 150,000 tokens, a tool result is clipped to about a quarter of it, and the request is checked before it is sent, so the server never has to truncate it. Large models keep the old limits.
 
 ## The SDK in five minutes
 
@@ -72,6 +136,7 @@ Parameters can be `str`, `int`, `float` or `bool`. If a tool raises, the error i
 agent = Agent(
     "You handle support for an online shop.",
     tools=[search_orders, refund],
+    model="ollama:qwen3:4b",
     approve=lambda name, args: input(f"{name}({args})? [y/n] ") == "y",
     on_text=lambda chunk: print(chunk, end="", flush=True),   # stream the reply
     on_tool=lambda name, args: print(f"\n[{name}]"),           # see each tool call
@@ -83,16 +148,15 @@ agent.run("And email her a confirmation")   # same conversation continues
 
 | Option | What it does |
 |---|---|
-| `model` | Any Claude model id. Default `claude-opus-5-5`. |
+| `model` | `"provider:model"` or a `Model` (see [Models](#models)). Default: `$NANOAGENT_MODEL`. |
 | `approve` | Called before each tool marked `approve=True`. Return `False` to decline; the model is told and adapts. Without a callback, marked tools just run. |
 | `on_text`, `on_tool` | Callbacks for streamed text and tool calls. |
 | `memory="NOTES.md"` | Loads the file into the instructions and gives the model a `remember` tool that appends to it. |
 | `subagents=True` | Gives the model a `task` tool that hands work to a fresh agent and gets back only its report. |
-| `compact_at` | Context size in tokens above which history is replaced by a model-written handoff note. Default 150,000. |
-| `max_output` | Characters kept from one tool result (head and tail). Default 20,000. |
-| `client` | Your own `anthropic.Anthropic` client. |
+| `compact_at` | Context size in tokens above which history is replaced by a model-written handoff note. Default: 70% of the model's window, at most 150,000. |
+| `max_output` | Characters kept from one tool result (head and tail). Default: about a quarter of the window, at most 20,000. |
 
-After a run, `agent.messages` holds the conversation and `agent.stop_reason` says why the last reply ended (`"end_turn"`, `"refusal"`, ...).
+After a run, `agent.messages` holds the conversation and `agent.stop_reason` says why the last reply ended: `"end"`, `"length"` (cut off) or `"refusal"`.
 
 ### Testing without a model
 
@@ -103,33 +167,33 @@ from nanoagent import Agent
 from nanoagent.testing import FakeModel, call, reply, text
 
 def test_refund_needs_approval():
-    with FakeModel(
-        reply(call("refund", order_id="A17")),      # the model asks for a refund
+    model = FakeModel(
+        reply(call("refund", order_id="A17")),       # the model asks for a refund
         reply(text("I could not refund the order.")),
-    ) as model:
-        agent = Agent(tools=[refund], client=model.client, approve=lambda *_: False)
+    )
+    agent = Agent(tools=[refund], model=model, approve=lambda *_: False)
 
-        agent.run("Refund order A17")
+    agent.run("Refund order A17")
 
-        result = model.tool_results()[0]            # what the agent sent back
-        assert result["is_error"] and "declined" in result["content"]
+    result = model.tool_results()[0]                 # what the agent sent back
+    assert result["error"] and "declined" in result["content"]
 ```
 
-`FakeModel` is a real HTTP server on localhost speaking the Messages API, streaming included. Your agent goes through the real client, so serialization and parsing are exercised too. `model.requests` records every request body.
+`model.requests` records the instructions, tools and messages of every request.
 
 ### A coding agent in your terminal
 
-The SDK ships with file and shell tools and a small command-line agent built on them (59 lines, in `nanoagent/cli.py`):
+The SDK ships with file and shell tools and a small command-line agent built on them (`nanoagent/cli.py`):
 
 ```bash
-nanoagent
+nanoagent --model ollama:qwen3:4b
 ```
 
 It asks before running commands or changing files, and keeps project notes in `AGENT.md`.
 
 ## The tutorial: build it from scratch
 
-Each chapter is one self-contained file that runs on its own and adds one idea to the previous one. Read them in order, or diff two neighbours to see exactly what an idea costs.
+Each chapter is one self-contained file that runs on its own and adds one idea to the previous one. Read them in order, or diff two neighbours to see exactly what an idea costs. The chapters use Claude, so they need the `anthropic` extra and a key.
 
 | Chapter | Lines | The idea |
 |---|---|---|
@@ -149,20 +213,16 @@ python tutorial/01_loop.py
 diff tutorial/02_tools.py tutorial/03_permissions.py
 ```
 
-Chapter 7 is a complete coding agent. `nanoagent/agent.py` is the same logic arranged as a class.
-
 ## Design rules
 
-- **The history is append-only.** Messages are never edited in place; the history is either extended or replaced whole by a summary. This keeps the prompt cache valid, and newer models reject edited histories.
+- **The history is append-only.** Messages are never edited in place; the history is either extended or replaced whole by a summary. This keeps prompt caches valid, and some models reject edited histories.
 - **The instructions and the tool set are fixed for an agent's lifetime**, for the same reason.
 - **Every tool call gets a result**, even when it was declined, invalid, cut off or interrupted. A call without a result makes the next request fail.
-- **The model's reply is stored exactly as received**, including the blocks you do not display.
+- **Each provider's reply is stored as received** next to the neutral form, and replayed unchanged to the provider that wrote it.
 
-## What is not here
+## Safety
 
-On purpose, so the code stays readable: other model providers, parallel tool execution, MCP, async, saving a session to disk, and sandboxing of the shell tool. Each is a good exercise, and most fit in a few dozen lines on top of what is here.
-
-The shell tool runs commands on your machine with your permissions. The approval prompt is the only barrier, so read what you approve.
+The shell tool runs commands on your machine with your permissions. Until the sandbox in the [roadmap](ROADMAP.md) lands, the approval prompt is the only barrier, so read what you approve.
 
 ## Development
 
@@ -178,7 +238,11 @@ pip install -e ".[dev]"
 pytest
 ```
 
-The suite covers the SDK and every tutorial chapter, and runs in a few seconds without an API key.
+The suite covers the SDK, every provider (against fake servers that speak each wire format) and every tutorial chapter, and runs in a few seconds with no model and no key. To also run it against a real local model:
+
+```bash
+NANOAGENT_LOCAL_MODEL=ollama:qwen2.5:1.5b pytest -m local
+```
 
 ## License
 
