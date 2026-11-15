@@ -1,5 +1,9 @@
 # nanoagent
 
+[![tests](https://github.com/gabrielekarra/nanoagent/actions/workflows/test.yml/badge.svg)](https://github.com/gabrielekarra/nanoagent/actions/workflows/test.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)
+
 **Any model becomes an agent, and you can read all of it.** Claude, GPT, or a 1.5B model running on your laptop through Ollama: the same few lines give it tools and a loop. The engine is under 500 lines of Python with no dependencies, and a seven-chapter tutorial builds it from an empty file.
 
 ```python
@@ -17,6 +21,22 @@ print(agent.run("Do I need an umbrella in Rome?"))
 Change `model=` and nothing else: `"anthropic:claude-opus-5-5"`, `"openai:gpt-5"`, `"lmstudio:qwen3-4b"`.
 
 Where this is going (voice, Telegram and WhatsApp, schedules, app control, always on, each in one line) is in [ROADMAP.md](ROADMAP.md).
+
+## Try it in 30 seconds
+
+With [Ollama](https://ollama.com) running:
+
+```bash
+pip install git+https://github.com/gabrielekarra/nanoagent
+```
+
+```bash
+nanoagent --model ollama:qwen3:4b
+```
+
+Or with Claude: install the `anthropic` extra (see [Install](#install)), set `ANTHROPIC_API_KEY`, and use `--model anthropic:claude-opus-5-5`.
+
+<!-- demo: record docs/demo.tape, commit docs/demo.gif, then replace this comment with ![demo](docs/demo.gif) -->
 
 ## Why another agent SDK
 
@@ -219,6 +239,10 @@ diff tutorial/02_tools.py tutorial/03_permissions.py
 - **The instructions and the tool set are fixed for an agent's lifetime**, for the same reason.
 - **Every tool call gets a result**, even when it was declined, invalid, cut off or interrupted. A call without a result makes the next request fail.
 - **Each provider's reply is stored as received** next to the neutral form, and replayed unchanged to the provider that wrote it.
+
+## Who this is for
+
+Pick nanoagent if you want an agent on a model you run yourself, want to understand how an agent works, want to build a small one you can fully audit, or want to test agent behaviour in CI without a network. Pick a larger framework if you need async, MCP or ready-made integrations today: they are on the [roadmap](ROADMAP.md), not here yet.
 
 ## Safety
 
