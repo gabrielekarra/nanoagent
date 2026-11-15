@@ -16,6 +16,7 @@ copy of a reply, replayed unchanged by the provider that wrote it (`by`) and
 ignored by every other one.
 """
 
+import asyncio
 import json
 import os
 from dataclasses import dataclass, field
@@ -53,9 +54,22 @@ class Model:
     name = "custom model"
     context_window = 32_000
 
+    images = False  # whether tool results may include images
+
     def reply(self, system, tools, messages, on_text=None):
-        """Return the model's next `Reply`. Call `on_text` with text as it is written."""
-        raise NotImplementedError
+        """Return the model's next `Reply`. Call `on_text` with text as it is written.
+
+        Implement this or `areply`; the other one is derived.
+        """
+        if type(self).areply is Model.areply:
+            raise NotImplementedError("a Model must implement reply() or areply()")
+        return asyncio.run(self.areply(system, tools, messages, on_text))
+
+    async def areply(self, system, tools, messages, on_text=None):
+        """The async form of `reply`. By default runs `reply` in a worker thread."""
+        if type(self).reply is Model.reply:
+            raise NotImplementedError("a Model must implement reply() or areply()")
+        return await asyncio.to_thread(self.reply, system, tools, messages, on_text)
 
 
 def estimate(*parts):

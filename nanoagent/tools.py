@@ -8,7 +8,10 @@ from pathlib import Path
 from typing import Annotated, Callable
 
 JSON_TYPES = {str: "string", int: "integer", float: "number", bool: "boolean"}
-PYTHON_TYPES = {"string": str, "integer": int, "number": (int, float), "boolean": bool}
+PYTHON_TYPES = {
+    "string": str, "integer": int, "number": (int, float), "boolean": bool,
+    "object": dict, "array": list, "null": type(None),
+}
 
 
 @dataclass
@@ -16,8 +19,9 @@ class Tool:
     name: str
     description: str
     schema: dict
-    function: Callable
-    approve: bool = False  # ask the agent's `approve` callback before running
+    function: Callable  # a plain or an `async def` function
+    approve: bool = False  # ask before running (the agent's `approve` callback, or the channel)
+    parallel: bool = True  # may run at the same time as other calls of the same reply
 
     def __call__(self, *args, **kwargs):
         return self.function(*args, **kwargs)
@@ -26,20 +30,47 @@ class Tool:
         """Return what is wrong with a model-written input, or None."""
         if not isinstance(arguments, dict):
             return "the input must be an object"
-        known = self.schema["properties"]
-        problems = [f"missing `{name}`" for name in self.schema["required"] if name not in arguments]
-        for name, value in arguments.items():
-            if name not in known:
-                problems.append(f"unknown `{name}`")
-                continue
-            kind = known[name]["type"]
-            is_bool = isinstance(value, bool)  # bool is an int in Python
-            if not isinstance(value, PYTHON_TYPES[kind]) or (is_bool and kind != "boolean"):
-                problems.append(f"`{name}` must be a {kind}")
-        return ", ".join(problems) or None
+        return ", ".join(validate(arguments, self.schema)) or None
 
 
-def tool(function=None, *, approve=False):
+def validate(value, schema, path=None):
+    """The problems of `value` against the parts of JSON Schema tools use."""
+    kinds = schema.get("type")
+    kinds = kinds if isinstance(kinds, list) else [kinds] if kinds else []
+    if kinds and not any(_is(value, kind) for kind in kinds):
+        return [f"`{path}` must be a {' or '.join(kinds)}"] if path else ["the input must be an object"]
+    if "enum" in schema and value not in schema["enum"]:
+        return [f"`{path}` must be one of {', '.join(map(str, schema['enum']))}"]
+    problems = []
+    if isinstance(value, dict):
+        properties = schema.get("properties", {})
+        problems += [f"missing `{_join(path, name)}`" for name in schema.get("required", []) if name not in value]
+        for name, item in value.items():
+            if name in properties:
+                problems += validate(item, properties[name], _join(path, name))
+            elif properties and schema.get("additionalProperties") is not True and not isinstance(
+                schema.get("additionalProperties"), dict
+            ):
+                problems.append(f"unknown `{_join(path, name)}`")
+    if isinstance(value, list) and isinstance(schema.get("items"), dict):
+        for index, item in enumerate(value):
+            problems += validate(item, schema["items"], f"{path or 'input'}[{index}]")
+    return problems
+
+
+def _is(value, kind):
+    if kind not in PYTHON_TYPES:
+        return True
+    if isinstance(value, bool) and kind in ("integer", "number"):
+        return False  # bool is an int in Python, but not in JSON
+    return isinstance(value, PYTHON_TYPES[kind])
+
+
+def _join(path, name):
+    return f"{path}.{name}" if path else name
+
+
+def tool(function=None, *, approve=False, parallel=True):
     """Turn a function into a tool.
 
     The name, the description and the schema come from the function itself:
@@ -53,6 +84,11 @@ def tool(function=None, *, approve=False):
 
         @tool(approve=True)   # the agent asks before running this one
         def delete_file(path: str) -> str: ...
+
+        @tool
+        async def fetch(url: str) -> str: ...   # async functions work too
+
+    `parallel=False` keeps a tool from running at the same time as others.
     """
 
     def build(function):
@@ -70,7 +106,7 @@ def tool(function=None, *, approve=False):
             if parameter.default is parameter.empty:
                 required.append(name)
         schema = {"type": "object", "properties": properties, "required": required}
-        return Tool(function.__name__, inspect.getdoc(function) or "", schema, function, approve)
+        return Tool(function.__name__, inspect.getdoc(function) or "", schema, function, approve, parallel)
 
     return build(function) if function else build
 
