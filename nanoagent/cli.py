@@ -5,6 +5,7 @@
     nanoagent service install jarvis.py            keep it running (see service.py)
     nanoagent apps                                 the apps app("...") can control
     nanoagent show runs/default-2026-11-15.jsonl   a recorded session, as a transcript
+    nanoagent bench --model ollama:qwen3:4b        how well a model works as an agent
 
 The coding agent is the SDK used the way you would use it: the built-in
 coding tools, approval before anything that changes your machine, notes
@@ -35,7 +36,7 @@ def show_tool(name, arguments):
     print(f"\n  [{name}] {json.dumps(arguments)[:100]}")
 
 
-COMMANDS = ("run", "service", "apps", "show")
+COMMANDS = ("run", "service", "apps", "show", "bench")
 
 
 def main(model=None, argv=None):
@@ -71,7 +72,25 @@ def command(argv):
     commands.add_parser("apps", help="list the apps app() can control")
     show = commands.add_parser("show", help="print a log recorded with log() as a transcript")
     show.add_argument("file")
+    bench = commands.add_parser("bench", help="measure how well a model works as an agent")
+    bench.add_argument("--model", default=os.environ.get("NANOAGENT_MODEL"), required=not os.environ.get("NANOAGENT_MODEL"))
+    bench.add_argument("--guided", action="store_true", help="use guided tool calling (JSON steps)")
+    bench.add_argument("--tasks", help="comma-separated task names (default: all)")
+    bench.add_argument("--steps", type=int, default=12, help="step limit per task")
     options = parser.parse_args(argv)
+
+    if options.command == "bench":
+        from . import bench as benchmark
+        from .model import resolve
+
+        model = resolve(options.model)
+        if options.guided:
+            if not hasattr(model, "tools") or isinstance(model.tools, dict):
+                parser.exit(1, "nanoagent: --guided works with Ollama and OpenAI-compatible models\n")
+            model.tools = "guided"
+        chosen = [t for t in benchmark.TASKS if not options.tasks or t.name in options.tasks.split(",")]
+        title = f"{options.model}{' (guided)' if options.guided else ''}"
+        return print(benchmark.table(benchmark.run(model, chosen, options.steps), title))
 
     if options.command == "show":
         from .log import show as transcript

@@ -54,6 +54,10 @@ class Agent:
     state        a directory where conversations (and trigger times) are saved,
                  so they survive restarts
     parallel     how many tool calls of one reply may run at the same time
+    max_steps    stop a request after this many model calls (stop_reason "steps")
+    shortlist    with more tools than this, each request offers only the ones that
+                 look relevant, plus a `find_tools` tool to ask for others. On by
+                 default (8) for models with a window of 32k tokens or less; 0 turns it off
     compact_at   context size, in tokens, above which history is summarized;
                  by default 70% of the model's window, at most 150,000
     max_output   characters kept from a single tool result; by default about
@@ -73,6 +77,8 @@ class Agent:
         subagents=False,
         state=None,
         parallel=4,
+        shortlist=None,
+        max_steps=None,
         compact_at=None,
         max_output=None,
     ):
@@ -93,6 +99,9 @@ class Agent:
         self.on_text = on_text
         self.on_tool = on_tool
         self.parallel = max(1, parallel)
+        self.shortlist = (8 if window <= 32_000 else 0) if shortlist is None else shortlist
+        self.requested = {}  # session -> tool names asked for with find_tools
+        self.max_steps = max_steps
         self.state = Path(state).expanduser() if state else None
         self.sessions = {}  # session name -> list of messages
         self.stop_reason = None  # why the last reply ended: "end", "tool", "length" or "refusal"
@@ -248,12 +257,17 @@ class Agent:
     # --- the loop -------------------------------------------------------------
 
     async def _loop(self, messages, context):
+        steps = 0
         while True:
+            steps += 1
+            if self.max_steps and steps > self.max_steps:
+                self.stop_reason = "steps"
+                return ""
             # Servers that run out of room drop the start of the conversation,
             # instructions included, without saying so. Make room first.
             if self._size(messages) > self.compact_at:
                 await self._compact(messages)
-            tools = list(self.tools.values())
+            tools = self._offered(messages, context["session"])
             self._emit("request", session=context["session"], system=self.system, messages=messages)
             reply = await self.model.areply(self.system, tools, messages, context["on_text"])
             self.stop_reason = reply.stop
@@ -280,6 +294,22 @@ class Agent:
                 await self._compact(messages)
             if not calls:
                 return reply.text
+
+    def _offered(self, messages, session):
+        """The tools sent with the next request: all of them, or a shortlist for small models."""
+        tools = [each for each in self.tools.values() if each.name != "find_tools"]
+        if not self.shortlist or len(tools) <= self.shortlist:
+            return tools
+        if "find_tools" not in self.tools:
+            self.tools["find_tools"] = _find_tools_tool(self)
+        used = {call["name"] for turn in messages if turn["role"] == "assistant" for call in turn.get("calls", [])}
+        keep = used | self.requested.get(session, set())
+        recent = " ".join(_text(turn) for turn in messages[-4:])
+        ranked = sorted((each for each in tools if each.name not in keep),
+                        key=lambda each: -_relevance(each, recent))
+        room = max(0, self.shortlist - len([each for each in tools if each.name in keep]))
+        chosen = {each.name for each in ranked[:room]} | keep
+        return [each for each in tools if each.name in chosen] + [self.tools["find_tools"]]
 
     async def _execute_all(self, calls, cut_off, context):
         """Run one reply's calls. Approvals are asked first, one at a time; then the
@@ -459,3 +489,32 @@ def _task_tool(parent):
         return await worker.arun(prompt)
 
     return task
+
+
+def _words(text):
+    return {word for word in re.findall(r"[a-z]{3,}", text.lower().replace("_", " "))}
+
+
+def _text(turn):
+    if turn["role"] == "tool":
+        return " ".join(r["name"] for r in turn["results"])
+    return turn.get("content") if isinstance(turn.get("content"), str) else ""
+
+
+def _relevance(each, text):
+    words = _words(text)
+    return 2 * len(_words(each.name) & words) + len(_words(each.description) & words)
+
+
+def _find_tools_tool(agent):
+    @tool
+    def find_tools(query: Annotated[str, "What you want to do, in a few words"]) -> str:
+        """List more tools that match a need. The ones listed become available on your next step."""
+        session = (CURRENT.get() or {}).get("session", "default")
+        candidates = [each for each in agent.tools.values() if each.name != "find_tools"]
+        ranked = sorted(candidates, key=lambda each: -_relevance(each, query))
+        found = [each for each in ranked if _relevance(each, query) > 0][:5] or ranked[:5]
+        agent.requested.setdefault(session, set()).update(each.name for each in found)
+        return "\n".join(f"- {each.name}: {each.description.splitlines()[0] if each.description else ''}" for each in found)
+
+    return find_tools
