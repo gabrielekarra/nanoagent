@@ -22,18 +22,6 @@ class Tool:
     def __call__(self, *args, **kwargs):
         return self.function(*args, **kwargs)
 
-    @property
-    def spec(self):
-        """The tool as the API wants it."""
-        return {
-            "name": self.name,
-            "description": self.description,
-            "input_schema": self.schema,
-            # Inputs stream as they are written instead of being buffered and
-            # validated server-side. `check` below does the validation.
-            "eager_input_streaming": True,
-        }
-
     def check(self, arguments):
         """Return what is wrong with a model-written input, or None."""
         if not isinstance(arguments, dict):
