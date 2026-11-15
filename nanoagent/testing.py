@@ -23,6 +23,7 @@ import itertools
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 
+from .agent import Agent
 from .model import Call, Model, ModelError, Reply
 from .runtime import Channel
 
@@ -166,3 +167,110 @@ async def running(agent, **options):
     finally:
         runtime.stop()
         await asyncio.wait_for(task, 5)
+
+
+class ChannelContract:
+    """The behaviour every channel must have, as tests you inherit.
+
+    Subclass it in a test file (the name must start with `Test`) and provide:
+
+        make(allow)              a channel that only answers the peers in `allow`
+        incoming(peer, text)     make the fake service deliver a message (any thread)
+        outgoing()               the (peer, text) pairs the channel has sent so far
+        stranger                 a peer that is not allowed, or None if the
+                                 channel has no allow list
+        limit                    the longest message the service accepts, or None
+
+    setup_method/teardown_method may start and stop the fake service.
+    """
+
+    peer = "1001"
+    stranger = "6666"
+    limit = None
+
+    def make(self, allow):
+        raise NotImplementedError
+
+    def incoming(self, peer, text):
+        raise NotImplementedError
+
+    def outgoing(self):
+        raise NotImplementedError
+
+    def _run(self, model, steps):
+        async def main():
+            agent = Agent(model=model)
+            channel = self.make([self.peer])
+            agent.use(channel)
+            async with running(agent):
+                await steps()
+                stopping = asyncio.get_running_loop().time()
+            self.stop_seconds = asyncio.get_running_loop().time() - stopping
+            return channel
+
+        return asyncio.run(main())
+
+    async def _until(self, count, timeout=5):
+        deadline = asyncio.get_running_loop().time() + timeout
+        while len(self.outgoing()) < count:
+            if asyncio.get_running_loop().time() > deadline:
+                raise AssertionError(f"expected {count} messages, the channel sent {self.outgoing()}")
+            await asyncio.sleep(0.01)
+
+    def test_contract_delivers_to_the_sender(self):
+        async def steps():
+            await asyncio.to_thread(self.incoming, self.peer, "ping")
+            await self._until(1)
+
+        self._run(_Echo(), steps)
+        sent = self.outgoing()
+        assert [str(peer) for peer, _ in sent] == [str(self.peer)], sent
+        assert sent[0][1] == "echo: ping", sent
+
+    def test_contract_ignores_strangers(self):
+        if self.stranger is None:
+            return
+        model = _Echo()
+
+        async def steps():
+            await asyncio.to_thread(self.incoming, self.stranger, "let me in")
+            await asyncio.to_thread(self.incoming, self.peer, "hi")
+            await self._until(1)
+            await asyncio.sleep(0.1)
+
+        self._run(model, steps)
+        assert model.seen == ["hi"], model.seen
+        assert all(str(peer) != str(self.stranger) for peer, _ in self.outgoing())
+
+    def test_contract_splits_long_answers(self):
+        if not self.limit:
+            return
+        words = " ".join(f"word{n}" for n in range(self.limit // 2))  # a few times the limit
+
+        async def steps():
+            await asyncio.to_thread(self.incoming, self.peer, "talk")
+            await self._until(2)
+            await asyncio.sleep(0.2)
+
+        self._run(FakeModel(reply(text(words))), steps)
+        parts = [message for _, message in self.outgoing()]
+        assert all(len(part) <= self.limit for part in parts), [len(part) for part in parts]
+        assert " ".join(parts).split() == words.split()
+
+    def test_contract_stops_quickly(self):
+        async def steps():
+            await asyncio.to_thread(self.incoming, self.peer, "ping")
+            await self._until(1)
+
+        self._run(_Echo(), steps)
+        assert self.stop_seconds < 2, f"the channel took {self.stop_seconds:.1f}s to stop"
+
+
+class _Echo(Model):
+    def __init__(self):
+        self.seen = []
+
+    def reply(self, system, tools, messages, on_text=None):
+        self.seen.append(messages[-1]["content"])
+        return Reply(text=f"echo: {messages[-1]['content']}")
+

@@ -300,3 +300,167 @@ class FakeGraph(FakeServer):
             return self.send_json(handler, 400, {"error": {"message": "Re-engagement message", "code": 131047}})
         self.sent.append((body["to"], body["text"]["body"]))
         return self.send_json(handler, 200, {"messages": [{"id": "wamid.1"}]})
+
+
+# --- Slack Web API -----------------------------------------------------------------------
+
+
+class FakeSlack(FakeServer):
+    def __init__(self):
+        super().__init__()
+        self.sent = []
+
+    def handle(self, handler, path, body):
+        if handler.headers.get("Authorization") != "Bearer xoxb-test":
+            return self.send_json(handler, 200, {"ok": False, "error": "invalid_auth"})
+        self.sent.append((body["channel"], body["text"]))
+        return self.send_json(handler, 200, {"ok": True})
+
+
+# --- Discord gateway and REST -------------------------------------------------------------
+
+
+class FakeDiscord(FakeServer):
+    """REST calls are recorded in `sent`; `message(channel, text)` pushes a gateway event."""
+
+    def __init__(self):
+        import socket
+        import threading
+
+        super().__init__()
+        self.sent = []
+        self.identified = []
+        self.clients = []
+        self.listener = socket.socket()
+        self.listener.bind(("127.0.0.1", 0))
+        self.listener.listen()
+        self.gateway = f"ws://127.0.0.1:{self.listener.getsockname()[1]}/?v=10&encoding=json"
+        threading.Thread(target=self._accept, daemon=True).start()
+
+    def handle(self, handler, path, body):
+        if handler.headers.get("Authorization") != "Bot discord-token":
+            return self.send_json(handler, 401, {"message": "401: Unauthorized"})
+        if path.endswith("/messages"):
+            self.sent.append((path.split("/")[2], body["content"]))
+        return self.send_json(handler, 200, {"id": "1"})
+
+    def _accept(self):
+        import threading
+
+        from nanoagent.channels.websocket import TEXT, accept_key, encode, read_frame
+
+        while True:
+            try:
+                client, _ = self.listener.accept()
+            except OSError:
+                return
+            request = b""
+            while b"\r\n\r\n" not in request:
+                request += client.recv(1024)
+            key = next(line.split(b": ", 1)[1].decode() for line in request.split(b"\r\n")
+                       if line.lower().startswith(b"sec-websocket-key"))
+            client.sendall((
+                "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                f"Sec-WebSocket-Accept: {accept_key(key)}\r\n\r\n"
+            ).encode())
+            client.sendall(encode(TEXT, json.dumps({"op": 10, "d": {"heartbeat_interval": 45000}}).encode(), mask=False))
+            self.clients.append(client)
+
+            def read(client=client):
+                try:
+                    while True:
+                        _, opcode, payload = read_frame(client.recv)
+                        if opcode == TEXT:
+                            event = json.loads(payload)
+                            if event.get("op") == 2:
+                                self.identified.append(event["d"])
+                                self.push(client, {"op": 0, "t": "READY", "s": 1, "d": {"user": {"id": "bot-1"}}})
+                except (ConnectionError, OSError):
+                    pass
+
+            threading.Thread(target=read, daemon=True).start()
+
+    def push(self, client, event):
+        from nanoagent.channels.websocket import TEXT, encode
+
+        client.sendall(encode(TEXT, json.dumps(event).encode(), mask=False))
+
+    def message(self, channel, text, author="user-1", bot=False):
+        import time
+
+        deadline = time.monotonic() + 3
+        while not self.identified and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.push(self.clients[-1], {"op": 0, "t": "MESSAGE_CREATE", "s": 2, "d": {
+            "channel_id": channel, "content": text, "author": {"id": author, "bot": bot}}})
+
+    def close(self):
+        self.listener.close()
+        for client in self.clients:
+            client.close()
+        super().close()
+
+
+# --- email -------------------------------------------------------------------------------
+
+
+class FakeMailbox:
+    """An in-memory IMAP inbox and SMTP outbox, shaped like imaplib and smtplib."""
+
+    def __init__(self):
+        import threading
+
+        self.inbox = []  # [raw bytes, seen]
+        self.outbox = []  # EmailMessage
+        self.lock = threading.Lock()
+
+    def receive(self, sender, body, subject="Hello"):
+        from email.message import EmailMessage
+
+        message = EmailMessage()
+        message["From"], message["To"], message["Subject"] = sender, "agent@example.com", subject
+        message["Message-ID"] = f"<m{len(self.inbox)}@example.com>"
+        message.set_content(body)
+        with self.lock:
+            self.inbox.append([message.as_bytes(), False])
+
+    def imap(self):
+        box = self
+
+        class IMAP:
+            def login(self, *args):
+                pass
+
+            def select(self, name):
+                return "OK", [b"1"]
+
+            def search(self, charset, criterion):
+                with box.lock:
+                    numbers = [str(i + 1).encode() for i, (_, seen) in enumerate(box.inbox) if not seen]
+                return "OK", [b" ".join(numbers)]
+
+            def fetch(self, number, what):
+                return "OK", [(b"1 (RFC822)", box.inbox[int(number) - 1][0])]
+
+            def store(self, number, flags, value):
+                box.inbox[int(number) - 1][1] = True
+
+            def logout(self):
+                pass
+
+        return IMAP()
+
+    def smtp(self):
+        box = self
+
+        class SMTP:
+            def login(self, *args):
+                pass
+
+            def send_message(self, message):
+                box.outbox.append(message)
+
+            def quit(self):
+                pass
+
+        return SMTP()
