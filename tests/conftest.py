@@ -1,23 +1,30 @@
 import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
 
-from nanoagent.testing import FakeModel
+sys.path.insert(0, str(Path(__file__).parent))
+
+from fakes import FakeAnthropic  # noqa: E402
 
 TUTORIAL = Path(__file__).parent.parent / "tutorial"
 CHAPTERS = sorted(path.name for path in TUTORIAL.glob("0*.py"))
 
 
+def pytest_configure(config):
+    config.addinivalue_line("markers", "local: needs a real local model (set NANOAGENT_LOCAL_MODEL)")
+
+
 @pytest.fixture
 def api():
-    with FakeModel() as model:
-        yield model
+    with FakeAnthropic() as server:
+        yield server
 
 
 @pytest.fixture
 def load(api, tmp_path, monkeypatch):
-    """Import a tutorial chapter as a module, pointed at the fake model, in an empty directory."""
+    """Import a tutorial chapter as a module, pointed at the fake Anthropic API, in an empty directory."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake")
     monkeypatch.setenv("ANTHROPIC_BASE_URL", api.url)

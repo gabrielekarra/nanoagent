@@ -6,11 +6,13 @@ nanoagent is deliberately small. The most useful contributions keep it that way.
 
 - Bug fixes, with a test that fails before the fix.
 - Clearer wording in the tutorial or README.
-- Tutorial chapters or short guides that build on the SDK, for example "add another model provider" or "save a session to disk".
+- Work on an issue from the [roadmap](ROADMAP.md). Each issue lists the tests that define it as done.
+- A new model provider: one file in `nanoagent/providers/`, tested against a fake server in `tests/fakes.py`.
+- Tutorial chapters or short guides that build on the SDK.
 
 ## What probably does not
 
-Anything that grows `nanoagent/agent.py` and `nanoagent/tools.py` well past 400 lines combined, or adds a dependency. If you are unsure, open an issue first and describe the idea in a few lines.
+Anything that grows the core (`agent.py`, `model.py` and `tools.py`) well past 500 lines combined, or adds a dependency to it. Optional extras are fine for features that need one (a provider SDK, voice, the browser). If you are unsure, open an issue first and describe the idea in a few lines.
 
 ## Running the tests
 
@@ -19,7 +21,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-The suite needs no API key. It talks to `FakeModel`, a local server that speaks the Messages API.
+The suite needs no model and no API key. The SDK tests use `FakeModel`, an in-process model with scripted replies; each provider is tested against a fake server in `tests/fakes.py` that speaks its wire format. Tests that need a real local model are marked `local` and skipped unless `NANOAGENT_LOCAL_MODEL` is set.
 
 ## Style
 

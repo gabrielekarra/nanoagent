@@ -25,7 +25,7 @@ def test_loop_runs_a_tool_and_feeds_the_result_back(chapter, api, load, capsys):
     messages = user("say hello")
     agent.run(messages)
 
-    assert len(api.requests) == 2
+    assert len(api.bodies) == 2
     (result,) = api.tool_results()
     assert result["type"] == "tool_result"
     assert result["tool_use_id"] == "toolu_1"
@@ -143,7 +143,7 @@ def test_interrupted_turn_is_closed(chapter, api, load, monkeypatch):
     messages.append({"role": "user", "content": "never mind"})
     agent.run(messages)
 
-    sent = api.requests[-1]["messages"]
+    sent = api.bodies[-1]["messages"]
     assert sent[2]["content"][0]["content"] == "Interrupted by the user."
     assert sent[3]["content"] == "never mind"
 
@@ -158,8 +158,8 @@ def test_requests_are_streamed(chapter, api, load):
 
     agent.run(user("hello"))
 
-    assert api.requests[0]["stream"] is True
-    assert all(tool["eager_input_streaming"] for tool in api.requests[0]["tools"])
+    assert api.bodies[0]["stream"] is True
+    assert all(tool["eager_input_streaming"] for tool in api.bodies[0]["tools"])
 
 
 @pytest.mark.parametrize("chapter", chapters_from(4))
@@ -177,7 +177,7 @@ def test_invalid_input_is_rejected_before_running(chapter, api, load):
 def test_cut_off_call_does_not_run(chapter, api, load):
     agent = load(chapter, AGENT_YOLO="1")
     api.script = [
-        reply(call("write_file", path="f.txt", content="half of the fi"), stop_reason="max_tokens"),
+        reply(call("write_file", path="f.txt", content="half of the fi"), stop="length"),
         reply(text("ok")),
     ]
 
@@ -190,7 +190,7 @@ def test_cut_off_call_does_not_run(chapter, api, load):
 @pytest.mark.parametrize("chapter", chapters_from(4))
 def test_refusal_ends_the_turn_cleanly(chapter, api, load, capsys):
     agent = load(chapter, AGENT_YOLO="1")
-    api.script = [reply(stop_reason="refusal"), reply(text("sure"))]
+    api.script = [reply(stop="refusal"), reply(text("sure"))]
     messages = user("something")
 
     agent.run(messages)
@@ -198,7 +198,7 @@ def test_refusal_ends_the_turn_cleanly(chapter, api, load, capsys):
     agent.run(messages)
 
     assert "declined" in capsys.readouterr().out
-    assert [m["role"] for m in api.requests[-1]["messages"]] == ["user", "user"]
+    assert [m["role"] for m in api.bodies[-1]["messages"]] == ["user", "user"]
 
 
 # --- chapter 5: context ------------------------------------------------------
@@ -225,14 +225,14 @@ def test_requests_ask_for_caching(chapter, api, load):
 
     agent.run(user("hello"))
 
-    assert api.requests[0]["cache_control"] == {"type": "ephemeral"}
+    assert api.bodies[0]["cache_control"] == {"type": "ephemeral"}
 
 
 @pytest.mark.parametrize("chapter", chapters_from(5))
 def test_large_context_is_compacted(chapter, api, load):
     agent = load(chapter, AGENT_YOLO="1", AGENT_COMPACT_AT="1000")
     api.script = [
-        reply(call("shell", command="echo hi"), input_tokens=5000),  # over the limit
+        reply(call("shell", command="echo hi"), tokens=5000),  # over the limit
         reply(text("Goal: say hi. Done: ran echo.")),  # the handoff note
         reply(text("all done")),
     ]
@@ -240,7 +240,7 @@ def test_large_context_is_compacted(chapter, api, load):
 
     agent.run(messages)
 
-    summary_request, final_request = api.requests[1], api.requests[2]
+    summary_request, final_request = api.bodies[1], api.bodies[2]
     assert "handoff note" in summary_request["messages"][-1]["content"]
     assert len(final_request["messages"]) == 1
     assert "Goal: say hi. Done: ran echo." in final_request["messages"][0]["content"]
@@ -258,10 +258,10 @@ def test_memory_file_is_loaded_and_extended(chapter, api, load):
 
     agent.run(user("I prefer tabs"))
 
-    assert "make test" in api.requests[0]["system"]
+    assert "make test" in api.bodies[0]["system"]
     assert Path("AGENT.md").read_text() == "- Tests run with `make test`.\n- The user prefers tabs.\n"
     # the system prompt does not change inside a session
-    assert api.requests[1]["system"] == api.requests[0]["system"]
+    assert api.bodies[1]["system"] == api.bodies[0]["system"]
 
 
 # --- chapter 7: subagents ----------------------------------------------------
@@ -279,7 +279,7 @@ def test_subagent_runs_in_a_fresh_context(chapter, api, load, capsys):
 
     answer = agent.run(user("how many files?"))
 
-    main_first, sub_first, sub_second, main_second = api.requests
+    main_first, sub_first, sub_second, main_second = api.bodies
     assert sub_first["messages"] == [{"role": "user", "content": "Count the files here."}]
     assert "task" in [tool["name"] for tool in main_first["tools"]]
     assert "task" not in [tool["name"] for tool in sub_first["tools"]]

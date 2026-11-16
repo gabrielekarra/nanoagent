@@ -1,5 +1,5 @@
 # Records the README demo with VHS: https://github.com/charmbracelet/vhs
-#   vhs docs/demo.tape      (needs ANTHROPIC_API_KEY set)
+#   vhs docs/demo.tape      (needs Ollama running with qwen3:4b pulled)
 # Produces docs/demo.gif. Run it inside an empty scratch folder.
 
 Output docs/demo.gif
@@ -9,7 +9,7 @@ Set Height 700
 Set Theme "Dracula"
 Set TypingSpeed 45ms
 
-Type "nanoagent"
+Type "nanoagent --model ollama:qwen3:4b"
 Enter
 Sleep 2s
 Type "Create hello.py that prints the first 10 Fibonacci numbers, then run it"
