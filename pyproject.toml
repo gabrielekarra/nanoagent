@@ -4,25 +4,43 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nanoagent"
-version = "0.2.0.dev0"
-description = "Any model becomes an agent: an SDK small enough to read, with a tutorial that builds it from scratch."
+dynamic = ["version"]
+description = "Any model becomes an agent, and every ability is one line."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 dependencies = []
+keywords = ["agent", "llm", "local models", "ollama", "tool calling", "mcp", "telegram", "voice"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 
 [project.urls]
 Repository = "https://github.com/gabrielekarra/nanoagent"
+Roadmap = "https://github.com/gabrielekarra/nanoagent/blob/main/ROADMAP.md"
 
 [project.optional-dependencies]
 anthropic = ["anthropic>=2"]
+voice = ["faster-whisper>=1", "sounddevice>=0.4", "numpy>=1.24"]
+browser = ["playwright>=1.40"]
+computer = ["pyautogui>=0.9"]
 dev = ["pytest", "anthropic>=2"]
 
 [project.scripts]
 nanoagent = "nanoagent.cli:main"
 
 [tool.setuptools]
-packages = ["nanoagent", "nanoagent.providers"]
+packages = ["nanoagent", "nanoagent.providers", "nanoagent.channels"]
+
+[tool.setuptools.dynamic]
+version = {attr = "nanoagent.__version__"}
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

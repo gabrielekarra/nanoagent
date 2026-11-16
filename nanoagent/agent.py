@@ -4,13 +4,24 @@ This file is the whole engine. `tutorial/` builds the same thing one idea at
 a time, if you want to see why each part is here.
 """
 
+import asyncio
+import contextvars
+import hashlib
+import inspect
 import json
 import os
+import re
+import time
+import warnings
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated
 
 from .model import estimate, resolve
-from .tools import tool
+from .tools import Tool, tool
+
+# The request being worked on, so tools such as `task` can see how it is approved.
+CURRENT = contextvars.ContextVar("nanoagent_request", default=None)
 
 COMPACT_PROMPT = (
     "Pause the task. Without calling any tool, write a handoff note for an agent "
@@ -26,20 +37,27 @@ class Agent:
         agent = Agent("You are a travel assistant.", tools=[get_weather], model="ollama:qwen3:4b")
         answer = agent.run("Do I need an umbrella in Rome?")
 
-    `run` can be called again: the agent keeps the conversation in
-    `agent.messages`.
+    Abilities plug in with one line each: `agent.use(telegram())`,
+    `agent.use(every("1h", "..."))`, then `agent.live()` keeps it running.
 
     system       instructions for the model, fixed for the agent's lifetime
     tools        functions decorated with `@tool`
     model        "provider:model" (e.g. "ollama:qwen3:4b", "anthropic:claude-opus-5-5")
                  or a `Model`; defaults to the NANOAGENT_MODEL environment variable
-    approve      `approve(name, arguments) -> bool`, asked before each tool
-                 declared with `@tool(approve=True)`; without it they just run
+    approve      `approve(name, arguments) -> bool` (or async), asked before each
+                 tool declared with `@tool(approve=True)`; without it they just run
     on_text      called with each piece of text as the model writes it
     on_tool      `on_tool(name, arguments)`, called when the model uses a tool
     memory       path of a notes file: loaded into the instructions, and the
                  model gets a `remember` tool that appends to it
     subagents    give the model a `task` tool that delegates to a fresh agent
+    state        a directory where conversations (and trigger times) are saved,
+                 so they survive restarts
+    parallel     how many tool calls of one reply may run at the same time
+    max_steps    stop a request after this many model calls (stop_reason "steps")
+    shortlist    with more tools than this, each request offers only the ones that
+                 look relevant, plus a `find_tools` tool to ask for others. On by
+                 default (8) for models with a window of 32k tokens or less; 0 turns it off
     compact_at   context size, in tokens, above which history is summarized;
                  by default 70% of the model's window, at most 150,000
     max_output   characters kept from a single tool result; by default about
@@ -57,79 +75,269 @@ class Agent:
         on_tool=None,
         memory=None,
         subagents=False,
+        state=None,
+        parallel=4,
+        shortlist=None,
+        max_steps=None,
         compact_at=None,
         max_output=None,
     ):
         self.model = resolve(model or os.environ.get("NANOAGENT_MODEL"))
         window = self.model.context_window
-        compact_at = compact_at or min(150_000, int(window * 0.7))
-        max_output = max_output or min(20_000, window)  # characters: about window / 4 tokens
-        tools = list(tools)
+        self.compact_at = compact_at or min(150_000, int(window * 0.7))
+        self.max_output = max_output or min(20_000, window)  # characters: about window / 4 tokens
         if memory:
             memory = Path(memory)
             if memory.exists():
                 system += f"\n\nNotes from earlier sessions:\n{memory.read_text()}"
-            tools.append(_remember_tool(memory))
-        if subagents:
-            tools.append(_task_tool(self))
-
-        # The instructions and the tool set never change after this point.
-        # A stable start of the conversation is what makes caching work.
+        # The instructions and the tool set never change once a conversation
+        # has started. A stable start of the conversation is what makes
+        # caching work, and some models reject a request where it changed.
         self.system = system
-        self.tools = {each.name: each for each in tools}
+        self.tools = {}
         self.approve = approve
         self.on_text = on_text
         self.on_tool = on_tool
-        self.compact_at = compact_at
-        self.max_output = max_output
-        self.messages = []
+        self.parallel = max(1, parallel)
+        self.shortlist = (8 if window <= 32_000 else 0) if shortlist is None else shortlist
+        self.requested = {}  # session -> tool names asked for with find_tools
+        self.max_steps = max_steps
+        self.state = Path(state).expanduser() if state else None
+        self.sessions = {}  # session name -> list of messages
         self.stop_reason = None  # why the last reply ended: "end", "tool", "length" or "refusal"
 
-    def run(self, request):
-        """Work on a request until the model stops using tools. Returns its final text."""
-        self.messages.append({"role": "user", "content": request})
+        # Extension points, filled by `use()`.
+        self.channels = []  # ways to talk to the agent
+        self.triggers = []  # reasons for it to act on its own
+        self.guards = []  # guard(name, arguments) -> "allow", "deny" or None, before approval
+        self.hooks = []  # hook(event, data), for logging and replay
+        self.closers = []  # called when the agent shuts down
+        self.notifier = None  # set by the first channel; see notify.py
+        self.runtime = None  # set while live() runs
+        self.clock = datetime.now  # replaceable in tests
+
+        self._add_tools(tools)
+        if memory:
+            self._add_tools([_remember_tool(memory)])
+        if subagents:
+            self._add_tools([_task_tool(self)])
+
+    # --- plugging things in ------------------------------------------------------
+
+    def use(self, thing, **options):
+        """Add an ability in one line: a tool, a list of tools, a channel, a trigger or a plugin.
+
+        Anything with an `attach(agent, **options)` method is a plugin.
+        """
+        if isinstance(thing, Tool):
+            self._add_tools([thing])
+        elif isinstance(thing, (list, tuple)) and thing and all(isinstance(each, Tool) for each in thing):
+            self._add_tools(thing)
+        elif hasattr(thing, "attach"):
+            thing.attach(self, **options)
+        else:
+            raise TypeError(
+                "use() takes a tool made with @tool, a list of tools, a channel, a trigger, "
+                f"or a plugin (anything with an attach(agent) method), not {type(thing).__name__}"
+            )
+        return thing
+
+    def notify_on(self, channel, peer=None):
+        """Send unprompted messages (trigger answers, the `notify` tool) to `peer` on `channel`."""
+        from .notify import enable
+
+        enable(self).target = (channel, peer)
+
+    def _add_tools(self, tools):
+        tools = list(tools)
+        if tools and any(self.sessions.values()):
+            raise RuntimeError("Add tools before the agent's first run: the tool set is fixed once a conversation starts.")
+        for each in tools:
+            self.tools[each.name] = each
+
+    # --- conversations -------------------------------------------------------------
+
+    @property
+    def messages(self):
+        """The default conversation, the one `run` uses."""
+        return self.session("default")
+
+    @messages.setter
+    def messages(self, value):
+        self.sessions["default"] = value
+
+    def session(self, name):
+        """The messages of one conversation, loaded from `state` the first time."""
+        if name not in self.sessions:
+            self.sessions[name] = self._load(name)
+        return self.sessions[name]
+
+    def _session_file(self, name):
+        safe = re.sub(r"[^A-Za-z0-9_.-]", "_", name)[:60]
+        digest = hashlib.sha1(name.encode()).hexdigest()[:8]
+        return self.state / "sessions" / f"{safe}-{digest}.json"
+
+    def _load(self, name):
+        if not self.state:
+            return []
+        path = self._session_file(name)
+        if not path.exists():
+            return []
         try:
-            return self._loop()
-        except KeyboardInterrupt:
-            self._close_open_calls()
+            return json.loads(path.read_text())["messages"]
+        except (ValueError, KeyError, TypeError):
+            aside = path.with_name(f"{path.name}.corrupt-{int(time.time())}")
+            path.rename(aside)
+            warnings.warn(f"Session file {path} was unreadable; moved it to {aside.name} and started fresh.")
+            return []
+
+    def _save(self, name):
+        if not self.state:
+            return
+        path = self._session_file(name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(path.name + ".tmp")
+        temporary.write_text(json.dumps({"session": name, "messages": self.sessions[name]}, indent=1, default=str))
+        temporary.replace(path)  # atomic: a crash never leaves half a file
+
+    # --- running -------------------------------------------------------------------
+
+    def run(self, request, **options):
+        """Work on a request until the model stops using tools. Returns its final text."""
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self.arun(request, **options))
+        raise RuntimeError("Agent.run() was called inside a running event loop. Use `await agent.arun(...)` there.")
+
+    async def arun(self, request, *, session="default", on_text=None, approve=None):
+        """The async form of `run`.
+
+        session    which conversation this request belongs to
+        on_text    overrides the agent's `on_text` for this request
+        approve    overrides the agent's `approve` for this request
+        """
+        messages = self.session(session)
+        messages.append({"role": "user", "content": request})
+        context = {"session": session, "on_text": on_text or self.on_text, "approve": approve or self.approve}
+        CURRENT.set(context)
+        try:
+            return await self._loop(messages, context)
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            self._close_open_calls(messages)
             raise
+        finally:
+            self._save(session)
+
+    def live(self, **options):
+        """Run every channel and trigger until stopped (Ctrl-C or `stop()`). See runtime.py."""
+        from .runtime import Runtime
+
+        try:
+            asyncio.run(Runtime(self, **options).run())
+        except KeyboardInterrupt:
+            pass
+
+    async def alive(self, **options):
+        """The async form of `live`."""
+        from .runtime import Runtime
+
+        await Runtime(self, **options).run()
+
+    def stop(self):
+        """Stop `live()`. Safe to call from any thread."""
+        if getattr(self, "runtime", None):
+            self.runtime.stop()
+
+    def close(self):
+        """Release what plugins started (servers, browsers, processes)."""
+        while self.closers:
+            self.closers.pop()()
 
     # --- the loop -------------------------------------------------------------
 
-    def _loop(self):
+    async def _loop(self, messages, context):
+        steps = 0
         while True:
+            steps += 1
+            if self.max_steps and steps > self.max_steps:
+                self.stop_reason = "steps"
+                return ""
             # Servers that run out of room drop the start of the conversation,
             # instructions included, without saying so. Make room first.
-            if self._size() > self.compact_at:
-                self._compact()
-            reply = self.model.reply(self.system, list(self.tools.values()), self.messages, self.on_text)
+            if self._size(messages) > self.compact_at:
+                await self._compact(messages)
+            tools = self._offered(messages, context["session"])
+            self._emit("request", session=context["session"], system=self.system, messages=messages)
+            reply = await self.model.areply(self.system, tools, messages, context["on_text"])
             self.stop_reason = reply.stop
             calls = [{"id": c.id, "name": c.name, "arguments": c.arguments} for c in reply.calls]
+            self._emit("reply", session=context["session"], text=reply.text, calls=calls, stop=reply.stop,
+                       context=reply.context, raw=reply.raw)
             # Store the reply with the provider's own copy, which it may need
             # back unchanged (Claude's reasoning, for one). A declined request
             # can come back empty.
             if reply.text or calls or reply.raw:
-                self.messages.append(
+                messages.append(
                     {"role": "assistant", "content": reply.text, "calls": calls, "raw": reply.raw, "by": self.model.key}
                 )
             if calls:
                 # A reply cut off by the output limit or a refusal may hold
                 # incomplete calls: none of them runs.
                 cut_off = reply.stop in ("length", "refusal")
-                results = [self._execute(call, cut_off) for call in calls]
-                self.messages.append({"role": "tool", "results": results})
+                results = await self._execute_all(calls, cut_off, context)
+                messages.append({"role": "tool", "results": results})
+            self._save(context["session"])
 
             # Compact only here, when every tool call has its result.
-            if max(reply.context, self._size()) > self.compact_at:
-                self._compact()
+            if max(reply.context, self._size(messages)) > self.compact_at:
+                await self._compact(messages)
             if not calls:
                 return reply.text
 
-    def _execute(self, call, cut_off):
-        """Run one tool call. Whatever happens, the model gets a result back."""
+    def _offered(self, messages, session):
+        """The tools sent with the next request: all of them, or a shortlist for small models."""
+        tools = [each for each in self.tools.values() if each.name != "find_tools"]
+        if not self.shortlist or len(tools) <= self.shortlist:
+            return tools
+        if "find_tools" not in self.tools:
+            self.tools["find_tools"] = _find_tools_tool(self)
+        used = {call["name"] for turn in messages if turn["role"] == "assistant" for call in turn.get("calls", [])}
+        keep = used | self.requested.get(session, set())
+        recent = " ".join(_text(turn) for turn in messages[-4:])
+        ranked = sorted((each for each in tools if each.name not in keep),
+                        key=lambda each: -_relevance(each, recent))
+        room = max(0, self.shortlist - len([each for each in tools if each.name in keep]))
+        chosen = {each.name for each in ranked[:room]} | keep
+        return [each for each in tools if each.name in chosen] + [self.tools["find_tools"]]
+
+    async def _execute_all(self, calls, cut_off, context):
+        """Run one reply's calls. Approvals are asked first, one at a time; then the
+        calls run together, up to `parallel` at once. Results keep the calls' order."""
+        results = [None] * len(calls)
+        ready = []  # (position, call, tool)
+        for position, call in enumerate(calls):
+            refusal = await self._check(call, cut_off, context)
+            if refusal:
+                results[position] = refusal
+            else:
+                ready.append((position, call, self.tools[call["name"]]))
+
+        limit = asyncio.Semaphore(self.parallel)
+
+        async def run(position, call, each):
+            async with limit:
+                results[position] = await self._invoke(call, each, context)
+
+        await asyncio.gather(*(run(*item) for item in ready if item[2].parallel))
+        for item in ready:
+            if not item[2].parallel:  # these never overlap another call
+                await run(*item)
+        return results
+
+    async def _check(self, call, cut_off, context):
+        """The error result that stops a call before it runs, or None."""
         name, arguments = call["name"], call["arguments"]
-        if self.on_tool:
-            self.on_tool(name, arguments)
         each = self.tools.get(name)
         if cut_off:
             return self._result(call, "Your reply hit the output limit before this call was "
@@ -140,37 +348,78 @@ class Agent:
             return self._result(call, f"Invalid input: expected a JSON object, got {str(arguments)[:200]!r}.", True)
         if problem := each.check(arguments):
             return self._result(call, f"Invalid input for {name}: {problem}. Schema: {json.dumps(each.schema)}", True)
-        if each.approve and self.approve and not self.approve(name, arguments):
-            return self._result(call, "The user declined this action. Ask them what to do instead.", True)
+        verdicts = [guard(name, arguments) for guard in self.guards]
+        if "deny" in verdicts:
+            return self._result(call, "A rule set by the user blocks this action. Do not retry it; "
+                                      "find another way or ask the user.", True)
+        if each.approve and "allow" not in verdicts and context["approve"]:
+            answer = context["approve"](name, arguments)
+            if inspect.isawaitable(answer):
+                answer = await answer
+            if not answer:
+                return self._result(call, "The user declined this action. Ask them what to do instead.", True)
+        return None
+
+    async def _invoke(self, call, each, context):
+        if self.on_tool:
+            self.on_tool(call["name"], call["arguments"])
+        self._emit("tool_start", session=context["session"], call=call)
         try:
-            return self._result(call, str(each.function(**arguments)))
+            if inspect.iscoroutinefunction(each.function):
+                output = await each.function(**call["arguments"])
+            else:  # a plain function runs in a worker thread, so it never blocks the loop
+                output = await asyncio.to_thread(each.function, **call["arguments"])
+            result = self._result(call, output)
         except Exception as error:  # the model reads the error and adapts
-            return self._result(call, f"{type(error).__name__}: {error}", True)
+            result = self._result(call, f"{type(error).__name__}: {error}", True)
+        self._emit("tool", session=context["session"], call=call, result=result)
+        return result
 
     def _result(self, call, output, failed=False):
+        """A tool result. `output` is text, or a list of text and image parts (see Image)."""
+        if hasattr(output, "part"):  # an Image on its own
+            output = [output]
+        if isinstance(output, list):
+            parts = [self._clip(p) if isinstance(p, str) else p.part() if hasattr(p, "part") else p for p in output]
+            if not getattr(self.model, "images", False):
+                parts = [p if isinstance(p, str) else "[image not shown: this model does not accept images]" for p in parts]
+            texts = [p for p in parts if isinstance(p, str)]
+            content = parts if len(texts) != len(parts) else "\n".join(texts)
+        else:
+            content = self._clip(str(output))
+        return {"id": call["id"], "name": call["name"], "content": content or "(no output)", "error": failed}
+
+    def _clip(self, output):
         if len(output) > self.max_output:  # keep the head and the tail
             half = self.max_output // 2
             omitted = len(output) - self.max_output
             output = f"{output[:half]}\n[... {omitted} characters omitted ...]\n{output[-half:]}"
-        return {"id": call["id"], "name": call["name"], "content": output or "(no output)", "error": failed}
+        return output
+
+    def _emit(self, event, **data):
+        for hook in self.hooks:
+            hook(event, data)
 
     # --- keeping the conversation healthy --------------------------------------
 
-    def _size(self, messages=None):
+    def _size(self, messages):
         """Estimated tokens of the next request."""
         tools = [[t.name, t.description, t.schema] for t in self.tools.values()]
-        return estimate(self.system, tools, self.messages if messages is None else messages)
+        return estimate(self.system, tools, messages)
 
-    def _compact(self):
+    async def _compact(self, messages):
         """Replace the whole history with a handoff note written by the model."""
-        if len(self.messages) < 2:
+        if len(messages) < 2:
             return  # nothing to summarize: the history is already one message
-        request = self.messages + [{"role": "user", "content": COMPACT_PROMPT}]
+        request = messages + [{"role": "user", "content": COMPACT_PROMPT}]
         request = self._fit(request, int(self.model.context_window * 0.8))
         # Same instructions and tools as always, so a cached prefix still hits.
-        reply = self.model.reply(self.system, list(self.tools.values()), request)
+        session = (CURRENT.get() or {}).get("session", "default")
+        self._emit("request", session=session, system=self.system, messages=request)
+        reply = await self.model.areply(self.system, list(self.tools.values()), request)
+        self._emit("reply", session=session, text=reply.text, calls=[], stop=reply.stop, context=reply.context, raw=reply.raw)
         if reply.text:
-            self.messages[:] = [
+            messages[:] = [
                 {
                     "role": "user",
                     "content": "This session continues earlier work. Handoff note from "
@@ -195,16 +444,16 @@ class Agent:
                 turn["raw"] = None
         return messages
 
-    def _close_open_calls(self):
+    def _close_open_calls(self, messages):
         """After an interruption, answer any tool call that never got a result.
 
         Most APIs reject a conversation where a call has no result, so an
         interrupted turn has to be closed before the next one starts.
         """
-        last = self.messages[-1]
+        last = messages[-1]
         if last["role"] == "assistant" and last["calls"]:
             results = [self._result(call, "Interrupted by the user.", True) for call in last["calls"]]
-            self.messages.append({"role": "tool", "results": results})
+            messages.append({"role": "tool", "results": results})
 
 
 def _remember_tool(path):
@@ -220,20 +469,52 @@ def _remember_tool(path):
 
 def _task_tool(parent):
     @tool
-    def task(prompt: Annotated[str, "The complete task description"]) -> str:
+    async def task(prompt: Annotated[str, "The complete task description"]) -> str:
         """Hand a self-contained piece of work to a fresh agent and get back its
         final report. Good for research and side tasks whose details you do not
         need. The agent sees nothing of this conversation: put everything it
         needs in the prompt."""
+        current = CURRENT.get() or {}
         worker = Agent(
             parent.system,
             [each for each in parent.tools.values() if each.name != "task"],  # no recursion
             model=parent.model,
-            approve=parent.approve,
+            approve=current.get("approve", parent.approve),  # asked the same way as the parent
             on_tool=parent.on_tool,
+            parallel=parent.parallel,
             compact_at=parent.compact_at,
             max_output=parent.max_output,
         )
-        return worker.run(prompt)
+        worker.guards = parent.guards
+        return await worker.arun(prompt)
 
     return task
+
+
+def _words(text):
+    return {word for word in re.findall(r"[a-z]{3,}", text.lower().replace("_", " "))}
+
+
+def _text(turn):
+    if turn["role"] == "tool":
+        return " ".join(r["name"] for r in turn["results"])
+    return turn.get("content") if isinstance(turn.get("content"), str) else ""
+
+
+def _relevance(each, text):
+    words = _words(text)
+    return 2 * len(_words(each.name) & words) + len(_words(each.description) & words)
+
+
+def _find_tools_tool(agent):
+    @tool
+    def find_tools(query: Annotated[str, "What you want to do, in a few words"]) -> str:
+        """List more tools that match a need. The ones listed become available on your next step."""
+        session = (CURRENT.get() or {}).get("session", "default")
+        candidates = [each for each in agent.tools.values() if each.name != "find_tools"]
+        ranked = sorted(candidates, key=lambda each: -_relevance(each, query))
+        found = [each for each in ranked if _relevance(each, query) > 0][:5] or ranked[:5]
+        agent.requested.setdefault(session, set()).update(each.name for each in found)
+        return "\n".join(f"- {each.name}: {each.description.splitlines()[0] if each.description else ''}" for each in found)
+
+    return find_tools

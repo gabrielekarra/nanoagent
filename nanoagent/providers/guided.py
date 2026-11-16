@@ -20,6 +20,8 @@ import ast
 import json
 import re
 
+from ..model import text_of
+
 RULES = """You work in steps. Reply to every message with exactly one JSON object and nothing else.
 
 To use a tool:
@@ -98,7 +100,7 @@ def render(messages):
             chat.append({
                 "role": "user",
                 "content": "\n\n".join(
-                    f"{'Error from' if r['error'] else 'Result of'} {r['name']}:\n{r['content']}"
+                    f"{'Error from' if r['error'] else 'Result of'} {r['name']}:\n{text_of(r['content'])}"
                     for r in turn["results"]
                 ),
             })
